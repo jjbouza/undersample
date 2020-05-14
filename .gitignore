@@ -1,0 +1,4 @@
+*.npy
+test_data/
+.vscode
+__pycache__/
