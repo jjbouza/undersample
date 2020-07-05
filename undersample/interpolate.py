@@ -1,8 +1,8 @@
 """
 Description: Various interpolation algorithms for non-uniform data, mostly for use in dMRI q-space interpolation.
 Author: Jose J. Bouza
-
 """
+
 import numpy as np
 from scipy.interpolate import griddata
 from scipy.sparse.linalg import lsqr
@@ -28,11 +28,23 @@ def get_convex_cube(vecs):
 
     return cube_side_length
 
-def interpolate_sinc(xi, yi, zi, a=2, s=1, h=0.01):
+def cost(x, A, b, w):
+    return np.linalg.norm(A@x-b)+np.linalg.norm(w*x)
+
+def cost_prime(x, A, y, w):
+    t_0 = ((A).dot(x) - y)
+    t_1 = (w * x)
+    t_2 = np.linalg.norm(t_1)
+    gradient = ((2 * (A.T).dot(t_0)) + ((1 / t_2) * (t_1 * w)))
+    return gradient
+
+def interpolate_sinc(xi, yi, zi, a=1):
     """
     Uses sinc (lanczos) interpolation to interpolate the function f(x_i) = y_i onto the points z_i, i.e. returns
     f(z_i)
 
+    
+    * THIS IS MY CUSTOM IMPLEMENTATION BASED ON MY UNDERSTANDING OF THE PAPER.
     Inputs:
     - xi    : Mx3
     - yi    : MxK
@@ -41,14 +53,17 @@ def interpolate_sinc(xi, yi, zi, a=2, s=1, h=0.01):
     Outputs:
     - f(zi) : NxK
     """
+    from scipy.optimize import fmin
+    from scipy.optimize import nnls
+    import multiprocessing
+    import os
 
-    def lanczos(x):
+    def lanczos(x, bound=np.inf):
         """
         Lanczos window function. x: _xN
         """
-        bound = a*s
         mask = np.abs(x) <= bound
-        x_t = np.sinc(x/s) * np.sinc(x/(a*s))
+        x_t = np.sinc(x/a)
         lanczos = x_t*mask
         lanczos = np.prod(lanczos, axis=-1)
 
@@ -62,17 +77,63 @@ def interpolate_sinc(xi, yi, zi, a=2, s=1, h=0.01):
         return sinc
 
     sinc = generate_sinc_matrix(xi, zi)
-    # least squares to get coefficients for sinc  (ridge least squares)
+    x0 = np.zeros([yi.shape[1], zi.shape[0]])
+    for i in range(yi.shape[1]):
+        x0[i] = nnls(sinc, yi[:,i], maxiter=1e10)[0]
 
-    lhs = sinc.T@sinc + h*np.identity(sinc.shape[1])
-    rhs = sinc.T@yi
-    c = np.linalg.solve(lhs, rhs)
-
-    # get f(zi) using the coefficients
-    Lzi = generate_sinc_matrix(zi, zi)
-
-    return Lzi@c
+    w = np.sum(zi**2, axis=-1)
+    p = multiprocessing.Pool(os.cpu_count())
+    out = p.starmap(fmin, [(cost, x0[i], (sinc, yi[:,i],w), 0.0001, 0.0001, 1000, None, False, True) for i in range(yi.shape[1])]) 
+    p.close()
+    p.join()
     
+    fzi = np.stack(out)
+
+    return fzi
+    
+
+def interpolate_sinc_fmin(xi, yi, zi, h=2):
+    """
+    Uses sinc (lanczos) interpolation to interpolate the function f(x_i) = y_i onto the points z_i, i.e. returns
+    f(z_i)
+
+    * THIS IS A DIRECT COPY OF WENXINGS CODE. I AM UNSURE ABOUT SOME PARTS, FOR EXAMPLE THE NP.KRON CALL.
+
+    Inputs:
+    - xi    : Mx3
+    - yi    : MxK
+    - zi    : Nx3
+
+    Outputs:
+    - f(zi) : NxK
+    """
+    from scipy.optimize import fmin_cg
+    from scipy.optimize import nnls
+    import multiprocessing
+    import os
+    
+    temp = np.ones([1, zi.shape[0], 1])
+    A = np.zeros([xi.shape[0], zi.shape[0]])
+
+    pdata = np.kron(xi[:,None,:], temp)
+
+    matrix = zi[None].repeat(pdata.shape[0], 0)-pdata/h
+    sinc = np.sinc(matrix)
+    sinc_vals = np.product(sinc, axis=-1)
+
+    x0 = np.zeros([yi.shape[1], zi.shape[0]])
+    for i in range(yi.shape[1]):
+        x0[i] = nnls(sinc_vals, yi[:,i])[0]
+
+    w = np.sum(zi**2, axis=-1)
+    p = multiprocessing.Pool(os.cpu_count())
+    out = p.starmap(fmin_cg, [(cost, x0[i], cost_prime, (sinc_vals, yi[:,i],w),0.0001,np.inf,0.00001,1000) for i in range(yi.shape[1])])
+    p.close()
+    p.join()
+
+    fzi = np.stack(out)
+
+    return fzi
 
 def interpolate_q_space_sinc(Sq, qvecs, nsamples):
     """
@@ -97,7 +158,7 @@ def interpolate_q_space_sinc(Sq, qvecs, nsamples):
 
     # generate grid samples
     grid_samples = np.array([(x,y,z) for x in side_samples for y in side_samples for z in side_samples])
-    Sq_cc = interpolate_sinc(qvecs, Sq, grid_samples, a=4, s=side_samples[1]-side_samples[0], h=0.3)
+    Sq_cc = interpolate_sinc(qvecs, Sq, grid_samples, a=side_samples[1]-side_samples[0])
 
     return Sq_cc.T.reshape(*Sq_s[:-1], -1), grid_samples
 
