@@ -1,5 +1,5 @@
-from interpolate import *
-from utils import load_slice, gtable_from_qvecs, vis_2d_field
+from undersample.interpolate import *
+from undersample.utils import load_slice, gtable_from_qvecs, vis_2d_field
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,7 +21,7 @@ def oned_test():
     fgt = np.cos(np.sin(xgt))**2
 
     # interpolate
-    fzi = interpolate_sinc(xi, fxi, zi)
+    fzi = interpolate_sinc(xi, fxi, zi).T
 
     # plot
     plt.plot(zi, fzi, label='interpolated')
@@ -57,5 +57,6 @@ def dmri_test():
 
 
 if __name__ == "__main__":
-    dmri_test()
+    oned_test()
+    #dmri_test()
     #dipy_gt()
